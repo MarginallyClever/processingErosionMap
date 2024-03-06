@@ -1,9 +1,6 @@
 class TerrainCell {
   float terrain;
   float water;
-  float sediment;
-  float [] flux = new float[4];
-  PVector velocity;
 }
 
 final static int TERRAIN_WIDTH = 256;
