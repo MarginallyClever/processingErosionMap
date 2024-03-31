@@ -4,56 +4,17 @@
 // dan@marginallyclever.com 2024-03-05
 //--------------------------------------------
 
-class TerrainCell {
-  float terrain;  // land height
-  float water;
-  float sediment;  // dissolved in water
-  float [] flux = new float[4];  // water pressure in each direction
-  float inFlow;  // pressure in   
-  float outFlow;  // pressure out
-  float vx, vy;  // actual water velocity after calculating pressure differences.
-  float sx, sy;  // slope of terrain
-  float sinAngle;  // slope as an angle in radians.
-  
-  String toString() {
-    return 
-      nf(terrain,0,3)+","+
-      nf(water,0,3)+","+
-      nf(sediment,0,3)+","+
-      nf(flux[0],0,3)+","+
-      nf(flux[1],0,3)+","+
-      nf(flux[2],0,3)+","+
-      nf(flux[3],0,3)+","+
-      nf(vx,0,3)+","+
-      nf(vy,0,3)+","+
-      nf(inFlow,0,3)+","+
-      nf(outFlow,0,3)+",";
-  }
-}
-
-final static int TERRAIN_WIDTH = 256;
-final static int TERRAIN_HEIGHT = 256;
+final static int TERRAIN_WIDTH = 16;
+final static int TERRAIN_HEIGHT = 16;
 final static int TERRAIN_SIZE = TERRAIN_WIDTH * TERRAIN_HEIGHT;
 
-TerrainCell [] map = new TerrainCell[TERRAIN_SIZE];
-PGraphics terrainColorMap;
-PGraphics waterColorMap;
-
 float GRAVITY = -9.81;  //m/s/s
-float scale1 = 0.005;  // perlin scale a
+float scale1 = 0.008;  // perlin scale a
 float scale2 = 0.002;  // perlin scale b
 float layerMix = 0.75;  // 0...1.  closer to 1, more layer1 is used.
 
 int rainPerStep = 300;  // drops per frame
 float waterDensityScale = 1.00;
-
-float erosion = 1;
-boolean rainOn=true;
-boolean drawWater=true;
-boolean drawTerrain=true;
-boolean erodeOn=false;
-boolean paused=false;
-boolean showMesh=false;
 
 float mapScale = 550.0;
 float rx = PI/3, rz = 0;
@@ -66,14 +27,27 @@ float evaporationConstant = 0.095;
 float pipeCrossSection = 0.6;
 float pipeLength = 1.0;
 
+Terrain map0, map1;
+
+boolean rainOn=true;
+boolean drawWater=true;
+boolean erodeOn=false;
+boolean paused=true;
+boolean showMesh=false;
+
+boolean drawTerrain=true;
 
 void setup() {
   size(800,800,P3D);
-  randomSeed(0xDEAD);
-  noiseSeed(0xBEEF);
   
-  makeTerrainMap();
-  updateHeightColorMap();
+  map0 = new Terrain();
+  map1 = new Terrain();
+  map0.updateAllSlope();
+  
+  assert(getDirectionIndex(1,2,0)==addr(2,2));
+  assert(getDirectionIndex(2,3,1)==addr(2,2));
+  assert(getDirectionIndex(3,2,2)==addr(2,2));
+  assert(getDirectionIndex(2,1,3)==addr(2,2));
 }
 
 
@@ -85,7 +59,11 @@ void draw() {
     // make water move downhill and distribute evenly
     updateAllFlux();
     updateAllVelocity();
-    updateAllErosionAndEvaporation();
+    if(erodeOn) {
+      updateAllErosionAndEvaporation();
+      moveAllSediment();
+      map0.updateAllSlope();
+    }
   }
   
   beginCamera();
@@ -107,15 +85,63 @@ void draw() {
     noStroke();
     fill(255);
   }
-  if(drawTerrain) { 
-    updateHeightColorMap();
-    drawTerrainMap();
+  if(drawTerrain) {
+    //map0.updateColorMapTerrain();
+    map0.updateColorMapFlux();
+    //map0.updateColorMapVelocity();
+    map0.drawTerrainMap();
   }
   noStroke();
   if(drawWater) {
-    updateWaterColorMap();
-    drawWaterMap();
+    map0.updateWaterColorMap();
+    map0.drawWaterMap();
   }
+  if(paused) {
+    drawCellData();
+  }
+}
+
+
+int addr(int x,int y) {
+  //if(x<0||x>=TERRAIN_WIDTH) 
+    //throw new IllegalArgumentException("oob x");
+  //if(y<0||y>=TERRAIN_HEIGHT) 
+    //throw new IllegalArgumentException("oob y");
+  return y*TERRAIN_WIDTH + x;
+}
+
+
+// go `direction` from cell (x,y) and get the address of that new cell.
+int getDirectionIndex(int x,int y,int direction) {
+  switch(direction) {
+    case 0:  x++;  break;  // 0 east
+    case 1:  y--;  break;  // 1 north
+    case 2:  x--;  break;  // 2 west
+    case 3:  y++;  break;  // 3 south
+    default:  throw new IllegalArgumentException("direction must be 0-3");
+  }
+  
+  return addr(x,y);
+}
+
+
+void drawCellData() {
+  int x = (TERRAIN_WIDTH-1) * mouseX/width;
+  int y = (TERRAIN_HEIGHT-1) * mouseY/height;
+  
+  int i = addr(x,y);
+  TerrainCell cell = map0.map[i];
+  float h = map0.effectiveHeight(i);
+  
+  fill(255,0,0);
+  beginShape(LINES);
+  stroke(255,0,0);
+  vertex( x, y, h+1 );
+  stroke(0,255,0);
+  vertex(x+cell.vx/dt, y+cell.vy/dt, h+1 );
+  endShape();
+  
+  //println(x+","+y+" = "+(cell.vx/dt)+","+(cell.vy/dt));
 }
 
 
@@ -125,22 +151,10 @@ void keyReleased() {
   if(key == '2') drawWater = !drawWater;
   if(key == '3') drawTerrain = !drawTerrain;
   if(key == '4') erodeOn = !erodeOn;
-  if(key == '5') report();
+  if(key == '5') map0.report();
   if(key == '6') showMesh = !showMesh;
   if(key == '+') mapScale *= 1.1;
   if(key == '-') mapScale /= 1.1;
-}
-
-
-void report() {
-  println("y,x,terrain,water,sediment,Flux 0,Flux 1,Flux 2,Flux 3,vx,vy,inFlow,outFlow,diff");
-
-  for(int y=0;y<TERRAIN_HEIGHT;++y) {
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      print(y+","+x+",");
-      println(map[addr(x,y)]);
-    }
-  }
 }
 
 void mouseDragged() {
@@ -150,161 +164,17 @@ void mouseDragged() {
   rx = max(rx,0);
 }
 
-void makeTerrainMap() {
-  int i=0;
-  for(int y=0;y<TERRAIN_HEIGHT;++y) {
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      var v = (noise(scale1 * x, scale1 * y)*(    layerMix) +
-               noise(scale2 * x, scale2 * y)*(1.0-layerMix)
-               )* 255;
-      var c = new TerrainCell();
-      map[i++] = c;
-      c.terrain = v;
-    }
-  }
 
-  terrainColorMap = createGraphics(TERRAIN_WIDTH,TERRAIN_HEIGHT);
-  waterColorMap = createGraphics(TERRAIN_WIDTH,TERRAIN_HEIGHT);
-}
-
-
-color heightColor(float value) {
-  // Define your color ranges
-  color brown = color(0x36, 0x1b, 0x00);  // A standard brown color
-  color green = color(0x96, 0x4b, 0x00);  // A mid-range green color
-  color white = color(0xff, 0xff, 0xff);  // Pure white
-
-  // Normalize the value to be between 0 and 1 for interpolation
-  float normalizedValue = map(value, 0, 255, 0, 1);
-
-  // Determine the color based on the altitude value
-  if (normalizedValue < 0.5) {
-    // Scale the value to be between 0 and 1 within this subrange
-    float scaledValue = map(normalizedValue, 0, 0.5, 0, 1);
-    // Interpolate between brown and green
-    return lerpColor(brown, green, scaledValue);
-  } else {
-    // Scale the value to be between 0 and 1 within this subrange
-    float scaledValue = map(normalizedValue, 0.5, 1, 0, 1);
-    // Interpolate between green and white
-    return lerpColor(green, white, scaledValue);
-  }  
-}
-
-
-void updateHeightColorMap() {
-  terrainColorMap.beginDraw();
-  terrainColorMap.noStroke();
-  
-  int i=0;
-  for(int y=0;y<TERRAIN_HEIGHT;++y) {
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      terrainColorMap.set(x, y, heightColor(map[i].terrain));
-      updateSlope(x,y);
-      i++;
-    }
-  }
-  terrainColorMap.endDraw();
-}
-
-
-void updateWaterColorMap() {
-  waterColorMap.beginDraw();
-  waterColorMap.noStroke();
-  
-  int i=0;
-  for(int y=0;y<TERRAIN_HEIGHT;++y) {
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      waterColorMap.set(x, y, waterColor(i));
-      i++;
-    }
-  }
-  waterColorMap.endDraw();
-}
-
-
-color waterColor(int i) {
-  var mapCell = map[i];
-  
-  var wa2 = map(mapCell.water*10,0,5,0,255);
-  var s = map(mapCell.sediment,0,sedimentCapacityConstant,0,255);
-  return color(0,s,255,wa2);
-}
-
-
-int addr(int x,int y) {
-  //if(x<0||x>=TERRAIN_WIDTH) throw new IllegalArgumentException("oob x");
-  //if(y<0||y>=TERRAIN_HEIGHT) throw new IllegalArgumentException("oob y");
-  return y*TERRAIN_WIDTH + x;
-}
-
-
-void updateSlope(int x,int y) {
-  int a = addr(x,y);
-
-  float dx = terrainLevel(constrain(x+1,0,TERRAIN_WIDTH-1),y)
-           - terrainLevel(constrain(x-1,0,TERRAIN_WIDTH-1),y);
-  float dy = terrainLevel(x,constrain(y+1,0,TERRAIN_HEIGHT-1))
-           - terrainLevel(x,constrain(y-1,0,TERRAIN_HEIGHT-1));
-  
-  var mapCell = map[a];
-  
-  mapCell.sx = dx;
-  mapCell.sy = dy;
-  mapCell.sinAngle = sqrt(dx*dx+dy*dy) / sqrt(1+ dx*dx+dy*dy);
-}
-
-
-// get the slope at (a) in the direction of pressure (v)
-float getSlope(int ax,int ay) {
-  var mapCell = map[addr(ax,ay)];
-  return mapCell.sinAngle;
-}
-
-
-float terrainLevel(int a) {
-  return map[a].terrain;
-}
-
-
-float terrainLevel(int x,int y) {
-  return terrainLevel(addr(x,y));
-}
-
-
-// water level (not including terrain height) 
-float waterLevel(int a) {
-  return map[a].water * waterDensityScale;
-}
-
-
-float waterLevel(int x,int y) {
-  return waterLevel(addr(x,y));
-}
-
-
-// terrain height + water height
-float effectiveHeight(int index) {
-  return terrainLevel(index) + waterLevel(index);
-}
-
-
-float effectiveHeight(int x,int y) {
-  var a = addr(x,y);
-  return effectiveHeight(a);
-}
-
- 
-float sedimentLevel(int x,int y) {
-  return map[addr(x,y)].sediment;
+void mouseWheel(MouseEvent event) {
+  mapScale = constrain(mapScale + event.getCount()*5, 0, 1000);
 }
 
 
 // add water to the map
-void rain() { //<>//
+void rain() {
   for(int i=0;i<rainPerStep;++i) {
-    int v = (int)random(0,TERRAIN_SIZE);
-    map[v].water += dt;
+    int v = (int)(random(0,TERRAIN_SIZE));
+    map0.map[v].water += dt;
   }
 }
 
@@ -319,95 +189,143 @@ void updateAllErosionAndEvaporation() {
 
 
 void updateErosionAndEvaporation(int ax,int ay) {
-  var mapCell = map[addr(ax,ay)]; 
+  var mapCell = map0.map[addr(ax,ay)]; 
   
-  float slope = abs(getSlope(ax,ay));
+  float slope = abs(map0.getSlope(ax,ay));
   
   // how much sediment is picked up?  aka the "sediment transport capacity"
-  float sedimentTransportCapacity = sedimentCapacityConstant
-      * sin(slope) 
-      * lengthOf(mapCell.vx,mapCell.vy)
+  float sedimentTransportCapacity
+      = sedimentCapacityConstant
+      * (0.15+sin(slope)) 
+      * max(0.15,lengthOf(mapCell.vx,mapCell.vy))
       * constrain(mapCell.water,0,1);
   
   var diff = sedimentTransportCapacity - mapCell.sediment;
   if( diff > 0 ) {
-    // some soil dissolves into water
-    
+    // room for more soil in water.  some soil dissolves into water
     var change = dissolvingConstant * diff;
     mapCell.terrain  -= change;
     mapCell.sediment += change;
   } else {
-    // some soil is deposited
+    // not enough room, some soil is deposited
     var change = depositionConstant * diff;
-    mapCell.terrain  -= change;
-    mapCell.sediment += change;
+    mapCell.terrain  += change;
+    mapCell.sediment -= change;
   }
   
   mapCell.water *= 1 - evaporationConstant * dt; 
+}
+
+
+void moveAllSediment() {
+  for(int ay=0;ay<TERRAIN_HEIGHT;++ay) {
+    for(int ax=0;ax<TERRAIN_WIDTH;++ax) {
+      moveSediment(ax,ay);
+    }
+  }
   
+  for(int i=0;i<TERRAIN_SIZE;++i) {
+    map0.map[i].sediment = map0.map[i].sediment2;
+  }
+}
+
+
+void moveSediment(int ax,int ay) {
+  var mapCell = map0.map[addr(ax,ay)]; 
   // move sediment, pulling a small amount from neighbors.
   float bx = constrain(ax - mapCell.vx * dt,0,TERRAIN_WIDTH -1);
   float by = constrain(ay - mapCell.vy * dt,0,TERRAIN_HEIGHT-1);
   
-  float topLeft     = sedimentLevel((int)floor(bx), (int)floor(by));
-  float topRight    = sedimentLevel((int)ceil (bx), (int)floor(by));
-  float bottomLeft  = sedimentLevel((int)floor(bx), (int)ceil (by));
-  float bottomRight = sedimentLevel((int)ceil (bx), (int)ceil (by));
+  float topLeft     = map0.sedimentLevel((int)floor(bx), (int)floor(by));
+  float topRight    = map0.sedimentLevel((int)ceil (bx), (int)floor(by));
+  float bottomLeft  = map0.sedimentLevel((int)floor(bx), (int)ceil (by));
+  float bottomRight = map0.sedimentLevel((int)ceil (bx), (int)ceil (by));
   
-  float sTop    = (bx - floor(bx)) * topRight    + (ceil(bx)-bx)*topLeft;
-  float sBottom = (bx - floor(bx)) * bottomRight + (ceil(bx)-bx)*bottomLeft;
-  
-  mapCell.sediment = (by-floor(by))*sTop + (ceil(by)-by)*sBottom;
+  float sTop        = (bx - floor(bx)) * topRight    + (ceil(bx)-bx)*topLeft;
+  float sBottom     = (bx - floor(bx)) * bottomRight + (ceil(bx)-bx)*bottomLeft;
+  mapCell.sediment2 = (by - floor(by)) * sTop        + (ceil(by)-by)*sBottom;
 }
 
 
+// flux is water pressure in and out of a cell.
 void updateAllFlux() {
+  // update the four outflows from this cell.
   for(int ay=0;ay<TERRAIN_HEIGHT;++ay) {
     for(int ax=0;ax<TERRAIN_WIDTH;++ax) {
-      updateFlux(ax,ay);
+      updateFlux(ax,ay,0);  // east
+      updateFlux(ax,ay,1);  // north
+      updateFlux(ax,ay,2);  // west
+      updateFlux(ax,ay,3);  // south
+    }
+  }
+  
+  // scale the outflows.
+  for(int ay=0;ay<TERRAIN_HEIGHT;++ay) {
+    for(int ax=0;ax<TERRAIN_WIDTH;++ax) {
+      updateFlux2(ax,ay);
     }
   }
 }
 
-void updateFlux(int ax,int ay) {
-  updateFlux(ax,ay,0);  // east
-  updateFlux(ax,ay,1);  // north
-  updateFlux(ax,ay,2);  // west
-  updateFlux(ax,ay,3);  // south
+
+/**
+ * Update the "flux" (flow velocity) between this cell (a) and neighbor cells (b).  
+ * @param a this cell
+ * @param b adjacent cell
+ * @param dir direction (0=east,1=north,2=west,3=south)
+ */
+void updateFlux(int ax,int ay,int direction) {
+  if(ax==0 && ay==0) {
+    print(direction+",");
+  }
   
+  // walls of the world have zero outgoing flux.
+  if(direction==0) {
+    if(ax+1>TERRAIN_WIDTH-1) return;
+  } else if(direction==1) {
+    if(ay-1<0) return;
+  } else if(direction==2) {
+    if(ax-1<0) return;
+  } else { // if(direction==3)
+    if(ay+1>TERRAIN_HEIGHT-1) return;
+  }
+  
+  var a = addr(ax,ay);
+  var b = getDirectionIndex(ax,ay,direction);
+  var ea = map0.effectiveHeight(a);
+  var eb = map0.effectiveHeight(b);
+  var hDiff = eb-ea;
+  
+  var v = map0.map[a].flux[direction] + dt * (GRAVITY * hDiff) * pipeCrossSection / pipeLength;
+  
+  if(ax==0 && ay==0) {
+    println(a+","
+          +b+","
+          +ea+","
+          +ea+","
+          +hDiff+","
+          +v+",");
+  }
+  
+  map0.map[a].flux[direction] = max(0, v);
+}
+
+
+void updateFlux2(int ax,int ay) {
   // scale flux
-  var mapCell = map[addr(ax,ay)]; 
+  var mapCell = map0.map[addr(ax,ay)]; 
   float sum = 0;
   for(float out : mapCell.flux) {
     sum += out;
   }
   
-  float k = (sum==0) ? 0 : min(1, mapCell.water / (sum*dt) );
+  float k = (sum==0) ? 0 : min(1, mapCell.water / sum / dt );
   
   for(int i=0;i<mapCell.flux.length;++i) {
     mapCell.flux[i] *= k;
   }
   
   mapCell.outFlow = sum * k;
-}
-
-
-/**
- * "flux" (flow velocity) between two cells.
- * @param a this cell
- * @param b adjacent cell
- * @param dir direction (0=east,1=north,2=west,3=south)
- */
-void updateFlux(int ax,int ay,int direction) {
-  var a = addr(ax,ay);
-  var b = getDirectionIndex(ax,ay,direction);
-  var ea = effectiveHeight(a);
-  var eb = effectiveHeight(b);
-  var hDiff = eb-ea;
-  
-  var v = map[a].flux[direction] + dt * (GRAVITY * hDiff) * pipeCrossSection / pipeLength;
-  
-  map[a].flux[direction] = max(0, v);
 }
 
 
@@ -421,98 +339,30 @@ void updateAllVelocity() {
 
 
 void updateVelocity(int ax,int ay) {
+  float fromE = (ax>=TERRAIN_WIDTH ) ? 0 : map0.getFlux(ax,ay,0,2);
+  float fromN = (ay< 0             ) ? 0 : map0.getFlux(ax,ay,1,3);
+  float fromW = (ax< 0             ) ? 0 : map0.getFlux(ax,ay,2,0);
+  float fromS = (ay>=TERRAIN_HEIGHT) ? 0 : map0.getFlux(ax,ay,3,1);
+  
   int a = addr(ax,ay);
-  TerrainCell mapCell = map[a];
-  
-  float fromE = (ax>=TERRAIN_WIDTH ) ? 0 : getFlux(ax,ay,0);
-  float fromN = (ay<=0             ) ? 0 : getFlux(ax,ay,1);
-  float fromW = (ax<=0             ) ? 0 : getFlux(ax,ay,2);
-  float fromS = (ay>=TERRAIN_HEIGHT) ? 0 : getFlux(ax,ay,3);
-  
-  mapCell.vx = (fromW + mapCell.flux[0] - mapCell.flux[2] - fromE) / 2;
-  mapCell.vy = (fromN + mapCell.flux[3] - mapCell.flux[1] - fromS) / 2;
-  
-  // vx/vy is now the water pressure through this cell.
-  
+  TerrainCell mapCell = map0.map[a];
   mapCell.inFlow = fromE + fromN + fromW + fromS;
+  float waterChange = dt * (mapCell.inFlow - mapCell.outFlow);
   
   // change in water level in this square
-  mapCell.water += dt * (mapCell.inFlow - mapCell.outFlow);
-  mapCell.water = max(0,mapCell.water);
-}
-
-
-// If I ask for the flux from the north, I should get map[north].flux[south].
-// This should be true for all directions.
-float getFlux(int x,int y,int direction) {
-  int adjacent = getDirectionIndex(x,y,direction);
-  int opposite = (direction+2)%4;
-  return map[adjacent].flux[opposite];
+  float oldWater = mapCell.water;
+  mapCell.water  = max(0, oldWater + waterChange    );
+  mapCell.water2 = max(0, oldWater + waterChange/2.0);
+ 
+  // get vx/vy, the water pressure through this cell.
+  float vx = (fromW + mapCell.flux[0] - mapCell.flux[2] - fromE) / 2.0;
+  float vy = (fromN + mapCell.flux[3] - mapCell.flux[1] - fromS) / 2.0;
+  
+  mapCell.vx = vx / mapCell.water2; 
+  mapCell.vy = vy / mapCell.water2;
 }
 
 
 float lengthOf(float x,float y) {
   return sqrt(x*x + y*y);
-}
-
-
-int getDirectionIndex(int x,int y,int direction) {
-  switch(direction) {
-    case 0:  x++;  break;  // 0 east
-    case 1:  y--;  break;  // 1 north
-    case 2:  x--;  break;  // 2 west
-    case 3:  y++;  break;  // 3 south
-    default:  throw new IllegalArgumentException("direction must be 0-3");
-  }
-  
-  x = constrain(x,0,TERRAIN_WIDTH-1);
-  y = constrain(y,0,TERRAIN_HEIGHT-1);
-  return addr(x,y);
-}
-
-
-void drawTerrainMap() {
-  
-  int i=0;
-  int j=TERRAIN_WIDTH;
-  for(int y=0;y<TERRAIN_HEIGHT-1;++y) {
-    beginShape(TRIANGLE_STRIP);
-    texture(terrainColorMap);
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      terrainPixel(x,y  ,i);
-      terrainPixel(x,y+1,j);
-      ++i;
-      ++j;
-    }
-    endShape();
-  }
-}
-
-
-void terrainPixel(int x,int y,int a) {
-  //normal(mapCell.sx,mapCell.sy,-1);
-  vertex( x, y, map[a].terrain, x, y);
-}
-
-
-void drawWaterMap() {
-  int i=0;
-  int j=TERRAIN_WIDTH;
-  for(int y=0;y<TERRAIN_HEIGHT-1;++y) {
-    beginShape(TRIANGLE_STRIP);
-    texture(waterColorMap);
-    for(int x=0;x<TERRAIN_WIDTH;++x) {
-      waterPixel(x,y  ,i);
-      waterPixel(x,y+1,j);
-      i++;
-      j++;
-    }
-    endShape();
-  }
-}
-
-
-void waterPixel(int x,int y,int i) {
-  var ha = effectiveHeight(i);
-  vertex(x,y,ha,x,y);
 }
