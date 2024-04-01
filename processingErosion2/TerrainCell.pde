@@ -1,5 +1,6 @@
 
 class TerrainCell {
+  float terrainOriginal;  // land height
   float terrain;  // land height
   float water;
   float water2;

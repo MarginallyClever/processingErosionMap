@@ -1,3 +1,5 @@
+final static long SEED = 0xBEEF;
+
 class Terrain {
   public TerrainCell [] map = new TerrainCell[TERRAIN_SIZE];
   public PGraphics terrainColorMap;
@@ -5,18 +7,20 @@ class Terrain {
   
   Terrain() {
     randomSeed(0xDEAD);
-    noiseSeed(0xBEEF);
+    noiseSeed(SEED);
     createMap();
-    createFlatTerrain();
+    //createFlatTerrain();
     //createVYTerrain();
     //createVXTerrain();
     //createConeTerrain();
-    //createRandomTerrain();
+    //createRandomTerrainSimplex();
+    createRandomTerrainPerlin();
+    
+    setOriginalTerrain();
   
     terrainColorMap = createGraphics(TERRAIN_WIDTH,TERRAIN_HEIGHT);
     waterColorMap = createGraphics(TERRAIN_WIDTH,TERRAIN_HEIGHT);
   }
-
   
   void createMap() {
     for(int i=0;i<TERRAIN_SIZE;++i) {
@@ -76,15 +80,35 @@ class Terrain {
   }
   
   
-  void createRandomTerrain() {
+  void createRandomTerrainSimplex() {
     int i=0;
-    for(int y=0;y<TERRAIN_HEIGHT;++y) {
-      for(int x=0;x<TERRAIN_WIDTH;++x) {
-        map[i++].terrain = (
-                  noise(scale1 * x, scale1 * y)//*(    layerMix)
-              //+ noise(scale2 * x, scale2 * y)*(1.0-layerMix)
-                 )* 255;
+    for(float y=0;y<TERRAIN_HEIGHT;++y) {
+      for(float x=0;x<TERRAIN_WIDTH;++x) {
+        float a = (float)OpenSimplex2S.noise3_ImproveXY(SEED,scale1 * x, scale1 * y,0);
+        float b = (float)OpenSimplex2S.noise3_ImproveXY(SEED,scale2 * x, scale2 * y,0);
+        float c = lerp(a,b,layerMix);
+        map[i++].terrain = (c+1) * 128;
       }
+    }
+  }
+  
+  
+  void createRandomTerrainPerlin() {
+    int i=0;
+    for(float y=0;y<TERRAIN_HEIGHT;++y) {
+      for(float x=0;x<TERRAIN_WIDTH;++x) {
+        float a = (float)noise(scale1 * x, scale1 * y);
+        float b = (float)noise(scale2 * x, scale2 * y);
+        float c = lerp(a,b,layerMix);
+        map[i++].terrain = c * 255;
+      }
+    }
+  }
+  
+
+  void setOriginalTerrain() {
+    for(int i=0;i<TERRAIN_SIZE;++i) {
+      map[i].terrainOriginal = map[i].terrain;
     }
   }
   
@@ -96,7 +120,7 @@ class Terrain {
     int i=0;
     for(int y=0;y<TERRAIN_HEIGHT;++y) {
       for(int x=0;x<TERRAIN_WIDTH;++x) {
-        terrainColorMap.set(x, y, heightColor(map[i++].terrain));
+        terrainColorMap.set(x, y, heightColor(map[i++]));
       }
     }
     terrainColorMap.endDraw();
@@ -111,7 +135,10 @@ class Terrain {
     for(int y=0;y<TERRAIN_HEIGHT;++y) {
       for(int x=0;x<TERRAIN_WIDTH;++x) {
         var mapCell = map0.map[i++];
-        color c = color(mapCell.flux[1]*128,mapCell.flux[2]*128,mapCell.flux[3]*128);
+        color c = color(
+          (mapCell.flux[0]+mapCell.flux[2])*128,
+          (mapCell.flux[1]+mapCell.flux[3])*128,
+          0);
         terrainColorMap.set(x, y, c);
       }
     }
@@ -122,18 +149,41 @@ class Terrain {
   public void updateColorMapVelocity() {
     terrainColorMap.beginDraw();
     terrainColorMap.noStroke();
+    float scale = 128;
     
     int i=0;
     for(int y=0;y<TERRAIN_HEIGHT;++y) {
       for(int x=0;x<TERRAIN_WIDTH;++x) {
         var mapCell = map0.map[i++];
-        //color c = color(mapCell.vx*128,mapCell.vy*128,mapCell.sinAngle*128+128);
-        color c = color(mapCell.vx*6,mapCell.vy*6,0);
+        color c = color(
+          abs(mapCell.vx*scale),
+          abs(mapCell.vy*scale),
+          mapCell.sinAngle*scale+128
+        );
         terrainColorMap.set(x, y, c);
       }
     }
     terrainColorMap.endDraw();
   }
+  
+  
+  public void updateColorMapHeightChange() {
+    terrainColorMap.beginDraw();
+    terrainColorMap.noStroke();
+    float scale = 64;
+    
+    int i=0;
+    for(int y=0;y<TERRAIN_HEIGHT;++y) {
+      for(int x=0;x<TERRAIN_WIDTH;++x) {
+        var mapCell = map0.map[i++];
+        float dh = (mapCell.terrainOriginal - mapCell.terrain) * scale + 128;
+        color c = color(dh,dh,dh);
+        terrainColorMap.set(x, y, c);
+      }
+    }
+    terrainColorMap.endDraw();
+  }
+  
   
   public void updateAllSlope() {
     for(int y=0;y<TERRAIN_HEIGHT;++y) {
@@ -152,31 +202,38 @@ class Terrain {
     var mapCell = map0.map[addr(x,y)];
     mapCell.sx = dx;
     mapCell.sy = dy;
-    mapCell.sinAngle = sqrt(dx*dx+dy*dy) / sqrt(1+ dx*dx+dy*dy);
+    mapCell.sinAngle = sqrt(dx*dx + dy*dy) / sqrt(dx*dx + dy*dy + 1.0);
   }
   
   
-  color heightColor(float value) {
+  color heightColor(TerrainCell mapCell) {
     // Define your color ranges
     color brown = color(0x36, 0x1b, 0x00);  // A standard brown color
-    color green = color(0x96, 0x4b, 0x00);  // A mid-range green color
+    color green = color(0x4b, 0x96, 0x00);  // A mid-range green color
     color white = color(0xff, 0xff, 0xff);  // Pure white
-  
+    color grey = color(0xc7, 0xb6, 0x4d);  // yellowish gray
+
     // Normalize the value to be between 0 and 1 for interpolation
+    float value = mapCell.terrain;
     float normalizedValue = map(value, 0, 255, 0, 1);
+  
+    color c;
   
     // Determine the color based on the altitude value
     if (normalizedValue < 0.5) {
       // Scale the value to be between 0 and 1 within this subrange
       float scaledValue = map(normalizedValue, 0, 0.5, 0, 1);
       // Interpolate between brown and green
-      return lerpColor(brown, green, scaledValue);
+      c = lerpColor(brown, green, scaledValue);
     } else {
       // Scale the value to be between 0 and 1 within this subrange
       float scaledValue = map(normalizedValue, 0.5, 1, 0, 1);
       // Interpolate between green and white
-      return lerpColor(green, white, scaledValue);
-    }  
+      c = lerpColor(green, white, scaledValue);
+    }
+    
+    float dt = constrain(mapCell.terrainOriginal - mapCell.terrain,0,3)/3.0;
+    return lerpColor(c,grey,dt);
   }
   
 
@@ -188,6 +245,21 @@ class Terrain {
     for(int y=0;y<TERRAIN_HEIGHT;++y) {
       for(int x=0;x<TERRAIN_WIDTH;++x) {
         waterColorMap.set(x, y, waterColor(i));
+        i++;
+      }
+    }
+    waterColorMap.endDraw();
+  }
+  
+  public void updateSedimentMap() {
+    waterColorMap.beginDraw();
+    waterColorMap.noStroke();
+    
+    int i=0;
+    for(int y=0;y<TERRAIN_HEIGHT;++y) {
+      for(int x=0;x<TERRAIN_WIDTH;++x) {
+        float s = (map[i].water<=0) ? 0 : constrain(map[i].sediment/map[i].water*128,0,255);
+        waterColorMap.set(x, y, color(s,s,s,64));
         i++;
       }
     }
@@ -249,14 +321,7 @@ class Terrain {
     vertex( x, y, effectiveHeight(i), x, y );
   }
 
-  
-  // get the slope at (a) in the direction of pressure (v)
-  public float getSlope(int ax,int ay) {
-    var mapCell = map[addr(ax,ay)];
-    return mapCell.sinAngle;
-  }
-  
-  
+ 
   // terrain height at index.
   public float terrainLevel(int a) {
     return map[a].terrain;
